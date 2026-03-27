@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ADDGAMES — Netlify Redirects
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Static assets — serve directly (skip game routing)
+/src/*        /src/:splat         200
+/favicon.ico  /favicon.ico        200
+
+# Game slug routing — any path that is NOT a known file serves game-player.html
+# The player page reads the slug from location.pathname and queries Supabase.
+/:slug        /public/game-player.html   200
+
+# Catch-all fallback (should never fire, but safety net)
+/*            /index.html                200

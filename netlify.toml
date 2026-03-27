@@ -1,0 +1,25 @@
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options             = "SAMEORIGIN"
+    X-Content-Type-Options      = "nosniff"
+    Referrer-Policy             = "strict-origin-when-cross-origin"
+    Permissions-Policy          = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/src/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
+
+[[headers]]
+  for = "/public/game-player.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"

@@ -124,6 +124,16 @@
     );
   }
 
+  // ── Get relative path (strip the top-level folder prefix) ─────────────────────
+  // e.g. "word-scramble/index.html" → "index.html"
+  //      "index.html"               → "index.html"
+  function getRelativePath(file) {
+    const raw = file._relativePath || file.webkitRelativePath || file.name;
+    // If there's a folder prefix (contains "/"), strip everything up to the first "/"
+    const slashIdx = raw.indexOf('/');
+    return slashIdx !== -1 ? raw.slice(slashIdx + 1) : raw;
+  }
+
   // ── Submit game ───────────────────────────────────────────────────────────────
   async function submitGame() {
     clearAlert();
@@ -149,7 +159,11 @@
 
       if (activeTab === 'upload') {
         if (!files.length) return showAlert('Please select at least one file.');
-        if (!files.find(f => (f._relativePath || f.webkitRelativePath || f.name).replace(/^[^/]+\//, '') === 'index.html')) return showAlert('Your upload must include an index.html file.');
+
+        // FIX: use getRelativePath to correctly detect index.html
+        const hasIndex = files.some(f => getRelativePath(f) === 'index.html');
+        if (!hasIndex) return showAlert('Your upload must include an index.html file.');
+
         gameUrl    = await uploadFiles(slug);
         sourceType = 'upload';
       } else {
@@ -185,37 +199,45 @@
     // Pre-compute the public base URL for this game's folder so we can inject
     // a <base href="…"> into index.html — this makes all relative asset paths
     // (CSS, JS, images, fonts) resolve correctly when served from Supabase CDN.
-    const { data: baseData } = sb.storage.from(BUCKET).getPublicUrl(`${slug}/`);
-    const gameBaseUrl = baseData.publicUrl; // e.g. https://….supabase.co/storage/v1/object/public/game-files/slug/
+    // Base URL must end with / so relative assets resolve correctly, but
+    // Supabase getPublicUrl strips trailing slash — add it back manually.
+    const { data: baseData } = sb.storage.from(BUCKET).getPublicUrl(`${slug}/placeholder`);
+    const gameBaseUrl = baseData.publicUrl.replace('/placeholder', '/') ;
 
     for (let i = 0; i < files.length; i++) {
       let file = files[i];
-      // webkitRelativePath = "nonogram/styles/main.css" — strip the top folder so
-      // we get "styles/main.css" and store as "slug/styles/main.css"
-      let relativePath = file._relativePath || file.webkitRelativePath || file.name;
-      if (relativePath.includes('/')) {
-        relativePath = relativePath.split('/').slice(1).join('/'); // strip first folder
-      }
+
+      // FIX: use getRelativePath helper for consistency
+      const relativePath = getRelativePath(file);
+      if (!relativePath) continue; // skip empty paths (e.g. just a folder name)
+
       const path = `${slug}/${relativePath}`;
       const mime = guessMime(file.name);
 
       // Inject <base href> into index.html so relative asset paths work from CDN
+      // FIX: always upload with explicit contentType: 'text/html' so Supabase/browser
+      //      renders it instead of showing raw source.
       if (relativePath === 'index.html') {
         const originalText = await file.text();
-        // Insert <base href> right after <head> (or at top if missing)
-        const patched = originalText.replace(
-          /(<head[^>]*>)/i,
-          `$1\n  <base href="${gameBaseUrl}">`
-        );
-        file = new Blob([patched], { type: 'text/html' });
+        // Insert <base href> right after <head> (or prepend if no <head>)
+        const patched = originalText.includes('<head')
+          ? originalText.replace(/(<head[^>]*>)/i, `$1\n  <base href="${gameBaseUrl}">`)
+          : `<base href="${gameBaseUrl}">\n` + originalText;  // gameBaseUrl already has trailing slash
+
+        const htmlBlob = new Blob([patched], { type: 'text/html' });
+        const { error } = await sb.storage.from(BUCKET).upload(path, htmlBlob, {
+          contentType: 'text/html',
+          upsert: true,
+        });
+        if (error) throw new Error(`Upload failed for ${relativePath}: ${error.message}`);
+      } else {
+        const { error } = await sb.storage.from(BUCKET).upload(path, file, {
+          contentType: mime,
+          upsert: true,
+        });
+        if (error) throw new Error(`Upload failed for ${relativePath}: ${error.message}`);
       }
 
-      const { error } = await sb.storage.from(BUCKET).upload(path, file, {
-        contentType: mime,
-        upsert: true,
-      });
-
-      if (error) throw new Error(`Upload failed for ${relativePath}: ${error.message}`);
       const pct = Math.round(((i + 1) / files.length) * 100);
       progressBar.style.width = pct + '%';
     }
@@ -226,21 +248,18 @@
 
   // ── Import GitHub repo via raw.githubusercontent.com proxy ───────────────────
   async function importGithub(slug, repoUrl, customPath) {
-    // Normalise URL → owner/repo + branch
     const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
     if (!match) throw new Error('Invalid GitHub URL. Format: https://github.com/user/repo');
     const [, owner, repoRaw] = match;
     const repo = repoRaw.replace(/\.git$/, '');
 
-    // Fetch default branch via GitHub API (no auth needed for public repos)
     let branch = 'main';
     try {
       const r = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
       const j = await r.json();
       branch = j.default_branch || 'main';
-    } catch (_) { /* fall through, assume main */ }
+    } catch (_) { /* fall through */ }
 
-    // Fetch file tree to find all assets
     const treeResp = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`
     );
@@ -248,7 +267,7 @@
     const tree = await treeResp.json();
 
     if (tree.truncated) {
-      throw new Error('Repository has too many files (GitHub limit). Try pointing to a subdirectory with the "Subdirectory" field.');
+      throw new Error('Repository has too many files. Try pointing to a subdirectory.');
     }
 
     const prefix   = customPath ? customPath.replace(/\/?index\.html$/, '').replace(/\/$/, '') : '';
@@ -259,42 +278,62 @@
 
     if (!relevant.length) throw new Error('No files found in the repository at the specified path.');
 
-    // Must have an index.html at the root (or subdirectory root)
     const hasIndex = relevant.some(n => {
       const filePath = prefix ? n.path.slice(prefix.length + 1) : n.path;
       return filePath === 'index.html';
     });
-    if (!hasIndex) throw new Error('No index.html found. Make sure your game has an index.html at the root (or specify the correct subdirectory).');
+    if (!hasIndex) throw new Error('No index.html found. Check your subdirectory path.');
 
     const rawBase = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/`;
 
-    // Upload each file to Supabase Storage
     $('uploadProgress').classList.add('visible');
+    let uploadedCount = 0;
     for (let i = 0; i < relevant.length; i++) {
       const node     = relevant[i];
       const filePath = prefix ? node.path.slice(prefix.length + 1) : node.path;
       const rawUrl   = rawBase + node.path;
-      const resp     = await fetch(rawUrl);
-      if (!resp.ok) continue;
-      const blob     = await resp.blob();
-      const mime     = guessMime(node.path);
 
-      // Inject <base href> into index.html so relative paths work from CDN
-      let uploadBlob = blob;
-      if (filePath === 'index.html') {
-        const { data: baseData } = sb.storage.from(BUCKET).getPublicUrl(`${slug}/`);
-        const originalText = await blob.text();
-        const patched = originalText.replace(
-          /(<head[^>]*>)/i,
-          `$1\n  <base href="${baseData.publicUrl}">`
-        );
-        uploadBlob = new Blob([patched], { type: 'text/html' });
+      // Fetch from GitHub — throw on failure for index.html, skip others
+      let resp;
+      try {
+        resp = await fetch(rawUrl);
+      } catch (e) {
+        if (filePath === 'index.html') throw new Error(`Failed to fetch index.html from GitHub: ${e.message}`);
+        continue;
       }
-      await sb.storage.from(BUCKET).upload(`${slug}/${filePath}`, uploadBlob, {
-        contentType: mime, upsert: true,
-      });
+      if (!resp.ok) {
+        if (filePath === 'index.html') throw new Error(`GitHub returned ${resp.status} for index.html. Check the repo is public and the path is correct.`);
+        continue;
+      }
+
+      const blob = await resp.blob();
+      const mime = guessMime(node.path);
+      let uploadBlob = blob;
+
+      if (filePath === 'index.html') {
+        const { data: baseData } = sb.storage.from(BUCKET).getPublicUrl(`${slug}/placeholder`);
+        const baseUrl = baseData.publicUrl.replace('/placeholder', '/');
+        const originalText = await blob.text();
+        const patched = originalText.includes('<head')
+          ? originalText.replace(/(<head[^>]*>)/i, `$1\n  <base href="${baseUrl}">`)
+          : `<base href="${baseUrl}">\n` + originalText;
+        uploadBlob = new Blob([patched], { type: 'text/html' });
+        const { error: e1 } = await sb.storage.from(BUCKET).upload(`${slug}/${filePath}`, uploadBlob, {
+          contentType: 'text/html', upsert: true,
+        });
+        if (e1) throw new Error(`Storage upload failed for index.html: ${e1.message}`);
+      } else {
+        const { error: e2 } = await sb.storage.from(BUCKET).upload(`${slug}/${filePath}`, uploadBlob, {
+          contentType: mime, upsert: true,
+        });
+        if (e2) throw new Error(`Storage upload failed for ${filePath}: ${e2.message}`);
+      }
+
+      uploadedCount++;
       progressBar.style.width = Math.round(((i + 1) / relevant.length) * 100) + '%';
     }
+
+    if (uploadedCount === 0) throw new Error('No files were uploaded. The GitHub repo may be private or rate-limited. Try again or check the URL.');
 
     const { data } = sb.storage.from(BUCKET).getPublicUrl(`${slug}/index.html`);
     return data.publicUrl;
@@ -318,18 +357,15 @@
 
   // ── Bind all events ───────────────────────────────────────────────────────────
   function bindEvents() {
-    // Open/close modal
     $('btnAdd').addEventListener('click', openModal);
     $('closeModal').addEventListener('click', closeModal);
     $('cancelModal').addEventListener('click', closeModal);
     addModal.addEventListener('click', e => { if (e.target === addModal) closeModal(); });
 
-    // Search
     $('searchInput').addEventListener('input', e => {
       renderGames(filterGames(e.target.value));
     });
 
-    // Slug auto-generate from name
     $('gameName').addEventListener('input', e => {
       const auto = e.target.value.toLowerCase()
         .replace(/[^a-z0-9\s-]/g, '')
@@ -343,7 +379,6 @@
       slugPreview.textContent = e.target.value || 'your-game';
     });
 
-    // Tabs
     $('sourceTabs').addEventListener('click', e => {
       const btn = e.target.closest('.tab');
       if (!btn) return;
@@ -353,16 +388,15 @@
       $('tab-github').style.display  = activeTab === 'github'  ? '' : 'none';
     });
 
-    // File input / drag-drop
-    const dropZone = $('dropZone');
-    const fileInput = $('fileInput');
+    const dropZone   = $('dropZone');
+    const fileInput  = $('fileInput');
     const folderInput = $('folderInput');
+
     fileInput.addEventListener('change', e => {
       addFiles([...e.target.files]);
       fileInput.value = '';
     });
     folderInput.addEventListener('change', e => {
-      // Reset file list when a new folder is chosen — avoids stale dedup
       files = [];
       addFiles([...e.target.files]);
       folderInput.value = '';
@@ -382,12 +416,9 @@
       }
     });
 
-    // Submit
     $('submitGame').addEventListener('click', submitGame);
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
   }
-
-  // ── File management ───────────────────────────────────────────────────────────
 
   // ── Recursive folder reader (drag & drop) ────────────────────────────────────
   function readEntry(entry, path, collected) {
@@ -396,7 +427,6 @@
       return new Promise(resolve => {
         entry.file(file => {
           const fullPath = path ? path + '/' + entry.name : entry.name;
-          // Can't defineProperty on File — wrap it in a new File with a custom path prop
           const wrapped = new File([file], file.name, { type: file.type, lastModified: file.lastModified });
           wrapped._relativePath = fullPath;
           collected.push(wrapped);
@@ -419,17 +449,17 @@
     return Promise.resolve();
   }
 
-    function addFiles(newFiles) {
+  function addFiles(newFiles) {
     newFiles.forEach(f => {
-      const fPath = f._relativePath || f.webkitRelativePath || f.name;
-      if (!files.find(x => (x._relativePath || x.webkitRelativePath || x.name) === fPath)) files.push(f);
+      const fPath = getRelativePath(f);
+      if (!files.find(x => getRelativePath(x) === fPath)) files.push(f);
     });
     renderFileList();
   }
 
   function renderFileList() {
     fileList.innerHTML = files.map((f, i) => {
-      const displayPath = f._relativePath || f.webkitRelativePath || f.name;
+      const displayPath = getRelativePath(f);
       return `
       <div class="file-item" data-idx="${i}">
         <span>${fileTypeIcon(f.name)}</span>
@@ -456,7 +486,6 @@
   function closeModal() {
     addModal.classList.remove('open');
     document.body.style.overflow = '';
-    // Reset form
     ['gameName','gameSlug','githubUrl','githubPath','authorName','gameDesc'].forEach(id => { $(id).value = ''; });
     files = [];
     renderFileList();
@@ -480,7 +509,12 @@
     t.className = `toast ${type}`;
     t.textContent = msg;
     wrap.appendChild(t);
-    setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(20px)'; t.style.transition = '0.3s'; setTimeout(() => t.remove(), 300); }, 3500);
+    setTimeout(() => {
+      t.style.opacity = '0';
+      t.style.transform = 'translateX(20px)';
+      t.style.transition = '0.3s';
+      setTimeout(() => t.remove(), 300);
+    }, 3500);
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────────────

@@ -16,17 +16,14 @@
     html, body { height: 100%; overflow: hidden; }
     body { background: var(--bg); color: var(--text); font-family: 'Syne', sans-serif; display: flex; flex-direction: column; }
 
-    /* ── Top bar ── */
     #topbar {
       height: 44px; flex-shrink: 0;
       background: rgba(8,11,15,0.95);
       backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border);
       display: flex; align-items: center;
-      padding: 0 16px; gap: 12px;
-      z-index: 50;
+      padding: 0 16px; gap: 12px; z-index: 50;
     }
-
     #homeBtn {
       display: flex; align-items: center; gap: 7px;
       text-decoration: none; color: var(--text);
@@ -37,87 +34,58 @@
       background: var(--surface);
     }
     #homeBtn:hover { border-color: var(--accent); color: var(--accent); }
-
     #gameIcon { font-size: 1.1rem; }
     #gameTitle {
       font-weight: 700; font-size: 0.95rem;
       letter-spacing: -0.02em;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      flex: 1;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
     }
-    #gameMeta {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.7rem; color: var(--muted);
-      flex-shrink: 0;
-    }
-
+    #gameMeta { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--muted); flex-shrink: 0; }
     #fullscreenBtn {
       width: 30px; height: 30px;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 6px; cursor: pointer; color: var(--muted);
-      display: grid; place-items: center; flex-shrink: 0;
-      transition: all 0.15s;
+      display: grid; place-items: center; flex-shrink: 0; transition: all 0.15s;
     }
     #fullscreenBtn:hover { color: var(--text); border-color: var(--muted); }
 
-    /* ── Frame ── */
     #frameWrap { flex: 1; position: relative; overflow: hidden; }
+    #gameFrame { width: 100%; height: 100%; border: none; display: block; background: #fff; }
 
-    #gameFrame {
-      width: 100%; height: 100%;
-      border: none; display: block;
-      background: #fff;
-    }
-
-    /* ── Loading / error overlay ── */
     #overlay {
       position: absolute; inset: 0;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background: var(--bg); z-index: 10; gap: 1rem;
-      transition: opacity 0.4s;
+      background: var(--bg); z-index: 10; gap: 1rem; transition: opacity 0.4s;
     }
     #overlay.hidden { opacity: 0; pointer-events: none; }
-
     .spinner {
       width: 40px; height: 40px;
-      border: 3px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
+      border: 3px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.7s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    #overlayText { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--muted); }
 
-    #overlayText {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem; color: var(--muted);
-    }
-    #overlayEmoji { font-size: 3rem; display: none; }
-
-    /* ── 404 ── */
-    #notFound {
+    #errorBox {
       display: none; flex-direction: column; align-items: center;
       justify-content: center; gap: 1rem; height: 100%;
       text-align: center; padding: 2rem;
     }
-    #notFound.show { display: flex; }
-    #notFound h2 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.03em; }
-    #notFound p { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+    #errorBox.show { display: flex; }
+    #errorBox h2 { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.03em; }
+    #errorBox p { color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
     .btn-back {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 10px 20px; background: var(--accent); color: #000;
       border-radius: 8px; text-decoration: none;
-      font-weight: 700; font-size: 0.9rem;
-      transition: background 0.15s;
+      font-weight: 700; font-size: 0.9rem; transition: background 0.15s;
     }
     .btn-back:hover { background: #00e87a; }
   </style>
 </head>
 <body>
   <div id="topbar">
-    <a id="homeBtn" href="/">
-      <span>🕹️</span>
-      AddGames
-    </a>
+    <a id="homeBtn" href="/"><span>🕹️</span> AddGames</a>
     <span id="gameIcon"></span>
     <span id="gameTitle">Loading…</span>
     <span id="gameMeta"></span>
@@ -134,14 +102,23 @@
       <div id="overlayText">Loading game…</div>
     </div>
 
-    <div id="notFound">
+    <div id="errorBox">
       <div style="font-size:4rem">🕹️</div>
-      <h2>Game not found</h2>
-      <p>// No game at this slug exists.</p>
+      <h2 id="errorTitle">Game not found</h2>
+      <p id="errorMsg">// No game at this slug exists.</p>
       <a class="btn-back" href="/">← Browse Games</a>
     </div>
 
-    <iframe id="gameFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups" allowfullscreen></iframe>
+    <!--
+      KEY FIX: srcdoc + blob URL approach
+      - No allow-same-origin needed (avoids sandbox escape warning)
+      - No content-type dependency on Supabase CDN
+      - We fetch HTML as text via JS, rewrite asset URLs to absolute,
+        then inject via srcdoc — browser renders it as real HTML
+    -->
+    <iframe id="gameFrame"
+      sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock"
+      allowfullscreen></iframe>
   </div>
 
   <script src="/src/config.js"></script>
@@ -152,45 +129,83 @@
 
     const sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON);
 
+    function showError(title, msg) {
+      document.getElementById('overlay').classList.add('hidden');
+      document.getElementById('errorTitle').textContent = title;
+      document.getElementById('errorMsg').textContent = msg;
+      document.getElementById('errorBox').classList.add('show');
+      document.title = title + ' — AddGames';
+    }
+
+    // 1. Fetch game record from DB
     const { data: game, error } = await sb
-      .from('games')
-      .select('*')
-      .eq('slug', slug)
-      .single();
+      .from('games').select('*').eq('slug', slug).single();
 
     if (error || !game) {
-      document.getElementById('overlay').classList.add('hidden');
-      document.getElementById('notFound').classList.add('show');
-      document.title = '404 — AddGames';
+      showError('Game not found', '// No game at this slug exists.');
       return;
     }
 
-    // Update tab title & top bar
     document.title = `${game.icon || '🎮'} ${game.name} — AddGames`;
     document.getElementById('gameIcon').textContent  = game.icon || '🎮';
     document.getElementById('gameTitle').textContent = game.name;
     document.getElementById('gameMeta').textContent  = game.author ? `by ${game.author}` : '';
 
-    // Load game via frame.src directly.
-    // index.html đã được inject <base href> lúc upload/import nên tất cả
-    // relative assets (CSS, JS, images) tự resolve đúng từ Supabase CDN.
-    // KHÔNG dùng srcdoc vì srcdoc iframe bị coi là about:srcdoc origin —
-    // <base href> sẽ không load được cross-origin resource (Supabase CDN).
+    // 2. Compute the base URL for this game's assets in Supabase Storage
+    //    e.g. https://xxx.supabase.co/storage/v1/object/public/game-files/slug/
+    const gameBaseUrl = game.game_url.replace(/\/index\.html.*$/, '/');
+
+    // 3. Fetch the raw HTML from Supabase Storage
+    //    Add cache-bust to bypass Supabase CDN stale cache
+    document.getElementById('overlayText').textContent = 'Fetching game…';
+    let htmlText;
+    try {
+      const resp = await fetch(game.game_url + '?t=' + Date.now());
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      htmlText = await resp.text();
+    } catch (e) {
+      showError('Failed to load game', `// Could not fetch game files: ${e.message}`);
+      return;
+    }
+
+    // 4. Remove any existing <base> tags (may have wrong URL from previous bad uploads)
+    htmlText = htmlText.replace(/<base[^>]*>/gi, '');
+
+    // 5. Rewrite all relative asset URLs to absolute Supabase CDN URLs.
+    //    This replaces src="css/style.css" → src="https://...supabase.co/.../slug/css/style.css"
+    //    Handles: src, href, url() in inline styles
+    //    Skips: already-absolute URLs (http/https/data/blob/javascript/mailto)
+    //    Skips: hash-only anchors (#section)
+    const skipPattern = /^(https?:|data:|blob:|javascript:|mailto:|#|\/\/)/i;
+
+    htmlText = htmlText
+      // src="..." and src='...'
+      .replace(/\b(src|href)=(["'])(?![\s"'])(.*?)\2/gi, (match, attr, quote, val) => {
+        if (skipPattern.test(val.trim())) return match;
+        return `${attr}=${quote}${gameBaseUrl}${val}${quote}`;
+      })
+      // url("...") and url('...') and url(...) in style attributes / <style> blocks
+      .replace(/url\((["']?)(?![\s"'])(.*?)\1\)/gi, (match, quote, val) => {
+        if (skipPattern.test(val.trim())) return match;
+        return `url(${quote}${gameBaseUrl}${val}${quote})`;
+      });
+
+    // 6. Inject into iframe via srcdoc — no content-type issues, no CDN cache problems
+    document.getElementById('overlayText').textContent = 'Starting game…';
     const frame = document.getElementById('gameFrame');
-    frame.src = game.game_url;
+    frame.srcdoc = htmlText;
     frame.addEventListener('load', () => {
       document.getElementById('overlay').classList.add('hidden');
-    });
-    setTimeout(() => document.getElementById('overlay').classList.add('hidden'), 8000);
+    }, { once: true });
+
+    // Fallback hide spinner after 10s
+    setTimeout(() => document.getElementById('overlay').classList.add('hidden'), 10000);
   })();
 
   function toggleFullscreen() {
     const fw = document.getElementById('frameWrap');
-    if (!document.fullscreenElement) {
-      fw.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen();
-    }
+    if (!document.fullscreenElement) fw.requestFullscreen().catch(() => {});
+    else document.exitFullscreen();
   }
   </script>
 </body>

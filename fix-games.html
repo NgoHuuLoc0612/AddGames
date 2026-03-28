@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AddGames — Fix Tool</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #080b0f;
+      --surface: #0f1318;
+      --surface2: #161c24;
+      --border: #1e2730;
+      --accent: #00ff88;
+      --accent2: #ff3b6b;
+      --amber: #ffb830;
+      --text: #e8edf3;
+      --muted: #4a5568;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 0.25rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .subtitle {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+      max-width: 720px;
+    }
+
+    .field-label {
+      font-size: 0.65rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 6px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.8rem;
+      outline: none;
+      margin-bottom: 1rem;
+      transition: border-color 0.2s;
+    }
+    input:focus { border-color: var(--accent); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-primary:hover:not(:disabled) { background: #00e87a; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Log console */
+    #log {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      height: 400px;
+      overflow-y: auto;
+      font-size: 0.75rem;
+      line-height: 1.8;
+      display: none;
+      max-width: 720px;
+    }
+    #log.visible { display: block; }
+
+    .log-line { display: flex; gap: 10px; }
+    .log-time { color: var(--muted); flex-shrink: 0; }
+    .log-ok   { color: var(--accent); }
+    .log-err  { color: var(--accent2); }
+    .log-warn { color: var(--amber); }
+    .log-info { color: var(--text); }
+    .log-head { color: var(--accent); font-weight: 700; }
+
+    /* Summary bar */
+    #summary {
+      display: none;
+      max-width: 720px;
+      margin-top: 1rem;
+      padding: 1rem 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.8rem;
+      gap: 2rem;
+    }
+    #summary.visible { display: flex; align-items: center; }
+    .stat { display: flex; flex-direction: column; gap: 2px; }
+    .stat-val { font-size: 1.4rem; font-weight: 700; }
+    .stat-lbl { color: var(--muted); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; }
+    .ok-val  { color: var(--accent); }
+    .err-val { color: var(--accent2); }
+    .skip-val{ color: var(--amber); }
+  </style>
+</head>
+<body>
+
+<h1>🛠 AddGames — Fix Tool</h1>
+<p class="subtitle">Re-uploads index.html for all games with correct content-type and base href</p>
+
+<div class="card">
+  <div class="field-label">Supabase URL</div>
+  <input id="sbUrl" type="text" placeholder="https://xxxx.supabase.co" />
+
+  <div class="field-label">Supabase Anon Key</div>
+  <input id="sbKey" type="text" placeholder="eyJ..." />
+
+  <button class="btn btn-primary" id="runBtn" onclick="runFix()">
+    ▶ Run Fix
+  </button>
+</div>
+
+<div id="log"></div>
+<div id="summary">
+  <div class="stat"><span class="stat-val ok-val"  id="sOk">0</span><span class="stat-lbl">Fixed</span></div>
+  <div class="stat"><span class="stat-val skip-val" id="sSkip">0</span><span class="stat-lbl">Skipped</span></div>
+  <div class="stat"><span class="stat-val err-val"  id="sErr">0</span><span class="stat-lbl">Failed</span></div>
+</div>
+
+<script>
+const BUCKET = 'game-files';
+
+function log(msg, type = 'info') {
+  const el = document.getElementById('log');
+  el.classList.add('visible');
+  const now = new Date().toLocaleTimeString('en', { hour12: false });
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${now}</span><span class="log-${type}">${msg}</span>`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function runFix() {
+  const url  = document.getElementById('sbUrl').value.trim();
+  const key  = document.getElementById('sbKey').value.trim();
+  if (!url || !key) { alert('Fill in Supabase URL and Anon Key first.'); return; }
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('summary').classList.remove('visible');
+
+  const sb = supabase.createClient(url, key);
+
+  let ok = 0, skip = 0, err = 0;
+
+  // 1. Fetch all games from DB
+  log('Fetching games from database…', 'info');
+  const { data: games, error: dbErr } = await sb.from('games').select('*').order('created_at', { ascending: false });
+  if (dbErr) { log('DB error: ' + dbErr.message, 'err'); btn.disabled = false; btn.textContent = '▶ Run Fix'; return; }
+  log(`Found ${games.length} game(s).`, 'head');
+
+  for (const game of games) {
+    log(`─── ${game.name} (/${game.slug}) ───`, 'head');
+
+    // 2. Compute the correct base URL (no trailing slash issue)
+    const { data: baseData } = sb.storage.from(BUCKET).getPublicUrl(`${game.slug}/placeholder`);
+    const baseUrl = baseData.publicUrl.replace('/placeholder', '/');
+    const indexStoragePath = `${game.slug}/index.html`;
+    const { data: indexUrlData } = sb.storage.from(BUCKET).getPublicUrl(indexStoragePath);
+    const indexPublicUrl = indexUrlData.publicUrl;
+
+    // 3. Try to fetch the current index.html from Storage to check content-type
+    let currentResp;
+    try {
+      currentResp = await fetch(indexPublicUrl, { method: 'HEAD' });
+    } catch(e) {
+      currentResp = null;
+    }
+
+    const currentType = currentResp?.headers?.get('content-type') || '';
+    log(`Storage content-type: "${currentType}"`, currentType.includes('text/html') ? 'ok' : 'warn');
+
+    // 4. Determine source of index.html
+    // game_url looks like: https://xxx.supabase.co/storage/v1/object/public/game-files/slug/index.html
+    // We need to find the original HTML. Two strategies:
+    // A) Download from current Storage URL (even if wrong content-type, the bytes are there)
+    // B) If game has a github source, re-fetch from GitHub raw
+
+    let htmlText = null;
+
+    // Strategy A: download from Storage directly (always try this first)
+    try {
+      const resp = await fetch(indexPublicUrl);
+      if (resp.ok) {
+        htmlText = await resp.text();
+        // Sanity check: must look like HTML
+        if (!htmlText.includes('<') || htmlText.length < 50) {
+          log('Storage file looks invalid, will skip.', 'warn');
+          htmlText = null;
+        } else {
+          log('Downloaded index.html from Storage (' + htmlText.length + ' bytes)', 'ok');
+        }
+      } else {
+        log(`Storage fetch failed: ${resp.status}`, 'warn');
+      }
+    } catch(e) {
+      log('Storage fetch error: ' + e.message, 'warn');
+    }
+
+    // Strategy B: if we couldn't get it from storage, try re-fetching from GitHub
+    if (!htmlText && game.source_type === 'github') {
+      log('Trying to re-fetch index.html from GitHub…', 'info');
+      // game_url base contains the slug path — we already know the slug
+      // Try common patterns from the original game_url
+      // game_url = baseUrl + 'index.html' essentially
+      try {
+        // We don't store the original GitHub URL in DB, so we can only try storage again
+        log('No GitHub URL stored in DB — cannot re-fetch from GitHub.', 'warn');
+      } catch(e) {}
+    }
+
+    if (!htmlText) {
+      log('No HTML source available — skipping.', 'warn');
+      skip++;
+      continue;
+    }
+
+    // 5. Strip any existing bad <base href> and inject the correct one
+    // Remove old base tags first
+    let cleaned = htmlText.replace(/<base[^>]*>/gi, '').trim();
+
+    // Inject correct base href right after <head> (or at top if no head)
+    let patched;
+    if (cleaned.match(/<head[^>]*>/i)) {
+      patched = cleaned.replace(/(<head[^>]*>)/i, `$1\n  <base href="${baseUrl}">`);
+    } else {
+      patched = `<base href="${baseUrl}">\n` + cleaned;
+    }
+
+    log(`Injected <base href="${baseUrl}">`, 'ok');
+
+    // 6. Upload with correct content-type
+    const blob = new Blob([patched], { type: 'text/html' });
+    const { error: upErr } = await sb.storage.from(BUCKET).upload(
+      indexStoragePath,
+      blob,
+      { contentType: 'text/html', upsert: true }
+    );
+
+    if (upErr) {
+      log('Upload failed: ' + upErr.message, 'err');
+      err++;
+    } else {
+      log('Uploaded index.html ✓ contentType=text/html', 'ok');
+
+      // 7. Update game_url in DB to make sure it points to correct path
+      const { error: dbUpErr } = await sb.from('games')
+        .update({ game_url: indexPublicUrl })
+        .eq('id', game.id);
+      if (dbUpErr) {
+        log('DB update failed: ' + dbUpErr.message, 'warn');
+      } else {
+        log('Updated game_url in DB ✓', 'ok');
+      }
+      ok++;
+    }
+  }
+
+  // Done
+  log('', 'info');
+  log(`Done. Fixed: ${ok} | Skipped: ${skip} | Failed: ${err}`, 'head');
+  document.getElementById('sOk').textContent   = ok;
+  document.getElementById('sSkip').textContent = skip;
+  document.getElementById('sErr').textContent  = err;
+  document.getElementById('summary').classList.add('visible');
+
+  btn.disabled = false;
+  btn.textContent = '▶ Run Fix';
+}
+</script>
+</body>
+</html>
